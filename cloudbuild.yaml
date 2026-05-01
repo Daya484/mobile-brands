@@ -1,0 +1,305 @@
+# ====================================================================
+# cloudbuild.yaml — Mobile Brands Multi-Env CI/CD Pipeline
+# ====================================================================
+#
+# HOW BRANCHES MAP TO ENVIRONMENTS:
+# ──────────────────────────────────────────────────────────────────
+#   feature/* or develop branch  →  DV trigger  (_ENV=dv, _PROJECT_ID=dv-env)
+#   main branch                  →  PD trigger  (_ENV=pd, _PROJECT_ID=prod-env)
+#
+# SMART CHANGE DETECTION:
+# ──────────────────────────────────────────────────────────────────
+#   Only affected components rebuild/redeploy:
+#   • cloud-run/**  changed → rebuild Docker image + deploy Cloud Run
+#   • dataproc/**   changed → re-upload PySpark scripts to GCS
+#   • dags/**       changed → re-sync DAG to Composer bucket
+#   • config/**     changed → re-upload to all destinations
+#
+# SUBSTITUTIONS (set per Cloud Build Trigger):
+# ──────────────────────────────────────────────────────────────────
+#   _ENV              : "dv" or "pd"
+#   _PROJECT_ID       : "dv-env" or "prod-env"
+#   _REGION           : GCP region (us-central1)
+#   _PIPELINE_BUCKET  : "dv-mb-pipeline-bucket" or "pd-mb-pipeline-bucket"
+#   _COMPOSER_BUCKET  : Composer env GCS bucket (from Composer UI)
+#   _ARTIFACT_REGISTRY: Full AR path (region-docker.pkg.dev/PROJECT/mb-repo)
+#   _CLOUD_RUN_SERVICE: "dv-mb-extractor" or "pd-mb-extractor"
+#   _SERVICE_ACCOUNT  : mb-pipeline-sa@PROJECT.iam.gserviceaccount.com
+#   _SOURCE_BUCKET    : Source Excel bucket per env
+# ====================================================================
+
+steps:
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 0 — Detect which files changed in this push
+  # Sets flags written to /workspace/change_flags/ for later steps.
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/git"
+    id: "detect-changes"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        mkdir -p /workspace/change_flags
+
+        # Get the previous commit (diff base)
+        PREV=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+
+        if [ -z "$$PREV" ]; then
+          echo "First commit — deploying everything."
+          touch /workspace/change_flags/deploy_cloud_run
+          touch /workspace/change_flags/deploy_dataproc
+          touch /workspace/change_flags/deploy_dag
+        else
+          CHANGED=$(git diff --name-only $$PREV HEAD)
+          echo "Changed files:"
+          echo "$$CHANGED"
+
+          # Cloud Run: cloud-run/ or config/ or extract.py or transformed.py changed
+          if echo "$$CHANGED" | grep -qE "^mobile-brands/(cloud-run|config|extract\.py|transformed\.py)"; then
+            echo "→ Cloud Run changes detected"
+            touch /workspace/change_flags/deploy_cloud_run
+          fi
+
+          # Dataproc: dataproc/ or config/ or transformed.py changed
+          if echo "$$CHANGED" | grep -qE "^mobile-brands/(dataproc|config|transformed\.py)"; then
+            echo "→ Dataproc script changes detected"
+            touch /workspace/change_flags/deploy_dataproc
+          fi
+
+          # DAG: dags/ or config/ changed
+          if echo "$$CHANGED" | grep -qE "^mobile-brands/(dags|config)"; then
+            echo "→ DAG changes detected"
+            touch /workspace/change_flags/deploy_dag
+          fi
+        fi
+
+        echo "Change flags:"
+        ls /workspace/change_flags/ || echo "(none)"
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 1 — Run unit tests (always runs)
+  # ────────────────────────────────────────────────────────────────
+  - name: "python:3.11-slim"
+    id: "run-tests"
+    waitFor: ["detect-changes"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --no-cache-dir --quiet \
+          pytest pytest-cov pandas openpyxl google-cloud-storage \
+          fastapi httpx pydantic uvicorn
+        echo "✅ Test dependencies installed."
+
+        if [ -d "mobile-brands/tests" ]; then
+          echo "Running tests..."
+          python -m pytest mobile-brands/tests/ -v --tb=short \
+            --cov=mobile-brands --cov-report=term-missing
+        else
+          echo "No tests directory — skipping."
+        fi
+    env:
+      - "ENV=${_ENV}"
+      - "PROJECT_ID=${_PROJECT_ID}"
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 2a — Build Docker image (only if cloud-run files changed)
+  # Tagged: SHORT_SHA + ENV-latest (e.g. dv-latest, pd-latest)
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "docker-build"
+    waitFor: ["run-tests"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_cloud_run ]; then
+          echo "Building Docker image for [${_ENV}] env..."
+          docker build \
+            --tag "${_ARTIFACT_REGISTRY}/mb-extractor:$SHORT_SHA" \
+            --tag "${_ARTIFACT_REGISTRY}/mb-extractor:${_ENV}-latest" \
+            --cache-from "${_ARTIFACT_REGISTRY}/mb-extractor:${_ENV}-latest" \
+            --build-arg ENV=${_ENV} \
+            --build-arg PROJECT_ID=${_PROJECT_ID} \
+            --file mobile-brands/cloud-run/Dockerfile \
+            mobile-brands/cloud-run
+          echo "✅ Docker build complete: $SHORT_SHA / ${_ENV}-latest"
+        else
+          echo "No Cloud Run changes — skipping Docker build."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 2b — Push Docker image to Artifact Registry
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "docker-push"
+    waitFor: ["docker-build"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_cloud_run ]; then
+          echo "Pushing image to Artifact Registry..."
+          docker push "${_ARTIFACT_REGISTRY}/mb-extractor:$SHORT_SHA"
+          docker push "${_ARTIFACT_REGISTRY}/mb-extractor:${_ENV}-latest"
+          echo "✅ Image pushed."
+        else
+          echo "No Cloud Run changes — skipping image push."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 2c — Deploy Cloud Run (only if cloud-run files changed)
+  # Uses exact commit SHA image → fully reproducible deployments
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "deploy-cloud-run"
+    waitFor: ["docker-push"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_cloud_run ]; then
+          echo "Deploying Cloud Run [${_ENV}]: ${_CLOUD_RUN_SERVICE}..."
+          gcloud run deploy "${_CLOUD_RUN_SERVICE}" \
+            --image="${_ARTIFACT_REGISTRY}/mb-extractor:$SHORT_SHA" \
+            --region="${_REGION}" \
+            --platform=managed \
+            --project="${_PROJECT_ID}" \
+            --service-account="${_SERVICE_ACCOUNT}" \
+            --no-allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=2 \
+            --timeout=900 \
+            --max-instances=5 \
+            --set-env-vars="ENV=${_ENV},PROJECT_ID=${_PROJECT_ID},SOURCE_BUCKET=${_SOURCE_BUCKET},DEST_BUCKET=${_PIPELINE_BUCKET}" \
+            --tag="sha-$SHORT_SHA"
+          echo "✅ Cloud Run deployed: ${_CLOUD_RUN_SERVICE} @ $SHORT_SHA"
+        else
+          echo "No Cloud Run changes — skipping deploy."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 3 — Upload PySpark scripts to GCS (if dataproc files changed)
+  # These are used directly by Dataproc at job runtime.
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "upload-pyspark-scripts"
+    waitFor: ["run-tests"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_dataproc ]; then
+          echo "Uploading PySpark scripts to gs://${_PIPELINE_BUCKET}/scripts/ ..."
+          gsutil -m cp \
+            mobile-brands/dataproc/bronze_job.py \
+            mobile-brands/dataproc/silver_job.py \
+            mobile-brands/dataproc/gold_job.py \
+            mobile-brands/config/env_config.py \
+            mobile-brands/transformed.py \
+            "gs://${_PIPELINE_BUCKET}/scripts/"
+          echo "✅ PySpark scripts uploaded."
+        else
+          echo "No Dataproc changes — skipping script upload."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 4a — Sync DAG to Composer GCS (if dags/ or config/ changed)
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "sync-dag"
+    waitFor: ["run-tests"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_dag ]; then
+          echo "Syncing DAG to Composer: gs://${_COMPOSER_BUCKET}/dags/ ..."
+          gsutil -m rsync -r -d \
+            mobile-brands/dags/ \
+            "gs://${_COMPOSER_BUCKET}/dags/"
+          echo "✅ DAG synced."
+        else
+          echo "No DAG changes — skipping DAG sync."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 4b — Also copy Dataproc scripts to Composer dags/dataproc/
+  # So Composer can upload them to GCS at DAG runtime.
+  # ────────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "sync-dataproc-to-composer"
+    waitFor: ["upload-pyspark-scripts", "sync-dag"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        if [ -f /workspace/change_flags/deploy_dataproc ] || \
+           [ -f /workspace/change_flags/deploy_dag ]; then
+          echo "Copying Dataproc scripts to Composer dags folder..."
+          gsutil -m rsync -r \
+            mobile-brands/dataproc/ \
+            "gs://${_COMPOSER_BUCKET}/dags/dataproc/"
+          gsutil -m rsync -r \
+            mobile-brands/config/ \
+            "gs://${_COMPOSER_BUCKET}/dags/config/"
+          echo "✅ Dataproc scripts synced to Composer."
+        else
+          echo "No changes affecting Composer dataproc scripts — skipping."
+        fi
+
+  # ────────────────────────────────────────────────────────────────
+  # STEP 5 — Print deployment summary
+  # ────────────────────────────────────────────────────────────────
+  - name: "bash"
+    id: "summary"
+    waitFor: ["deploy-cloud-run", "sync-dataproc-to-composer"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        echo "============================================================"
+        echo "  DEPLOYMENT SUMMARY"
+        echo "  ENV:     ${_ENV}"
+        echo "  PROJECT: ${_PROJECT_ID}"
+        echo "  BRANCH:  $BRANCH_NAME"
+        echo "  COMMIT:  $SHORT_SHA"
+        echo "============================================================"
+        echo "  Components deployed:"
+        [ -f /workspace/change_flags/deploy_cloud_run ] && echo "  ✅ Cloud Run: ${_CLOUD_RUN_SERVICE}" || echo "  ⏭️  Cloud Run: unchanged"
+        [ -f /workspace/change_flags/deploy_dataproc  ] && echo "  ✅ Dataproc scripts: gs://${_PIPELINE_BUCKET}/scripts/" || echo "  ⏭️  Dataproc: unchanged"
+        [ -f /workspace/change_flags/deploy_dag        ] && echo "  ✅ DAG: gs://${_COMPOSER_BUCKET}/dags/" || echo "  ⏭️  DAG: unchanged"
+        echo "============================================================"
+
+
+# ────────────────────────────────────────────────────────────────
+# Images to push (Cloud Build UI tracking)
+# ────────────────────────────────────────────────────────────────
+images:
+  - "${_ARTIFACT_REGISTRY}/mb-extractor:${_ENV}-latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+  dynamicSubstitutions: true   # enables $_VAR references to work in bash scripts
+
+timeout: "1800s"
+
+
+# ────────────────────────────────────────────────────────────────
+# DEFAULT SUBSTITUTIONS
+# Override these in each Cloud Build Trigger (dv / pd separately)
+# ────────────────────────────────────────────────────────────────
+substitutions:
+  # ── Change these per trigger ──
+  _ENV:              "dv"
+  _PROJECT_ID:       "dv-env"
+  _PIPELINE_BUCKET:  "dv-mb-pipeline-bucket"
+  _SOURCE_BUCKET:    "dv-mobile-brands"
+  _COMPOSER_BUCKET:  "FILL_IN_AFTER_COMPOSER_CREATED"
+  _CLOUD_RUN_SERVICE:"dv-mb-extractor"
+  _SERVICE_ACCOUNT:  "mb-pipeline-sa@dv-env.iam.gserviceaccount.com"
+  # ── Shared ──
+  _REGION:           "us-central1"
+  _ARTIFACT_REGISTRY:"us-central1-docker.pkg.dev/dv-env/mb-repo"

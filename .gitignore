@@ -1,0 +1,153 @@
+# ============================================================
+# .gitignore — Mobile Brands GCP Pipeline
+# ============================================================
+
+# ─────────────────────────────────────
+# Python
+# ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+pip-wheel-metadata/
+MANIFEST
+
+# ─────────────────────────────────────
+# Virtual Environments
+# ─────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env.local
+.env.dv
+.env.pd
+.env.production
+.env.development
+
+# ─────────────────────────────────────
+# KEEP this — it is a safe template
+# ─────────────────────────────────────
+# .env.example  ← DO NOT ignore this
+
+# ─────────────────────────────────────
+# GCP Credentials — NEVER commit these
+# ─────────────────────────────────────
+*.json
+!package.json
+!package-lock.json
+service-account*.json
+credentials*.json
+key*.json
+*-sa-key.json
+application_default_credentials.json
+
+# ─────────────────────────────────────
+# Environment / Secrets
+# ─────────────────────────────────────
+.env
+secrets/
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+*.cer
+
+# ─────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.code-workspace
+
+# ─────────────────────────────────────
+# OS Files
+# ─────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────────────
+# Testing
+# ─────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+nosetests.xml
+test-results/
+junit*.xml
+
+# ─────────────────────────────────────
+# Jupyter Notebooks
+# ─────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─────────────────────────────────────
+# Terraform (if added later)
+# ─────────────────────────────────────
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars
+
+# ─────────────────────────────────────
+# Docker
+# ─────────────────────────────────────
+.dockerignore.local
+
+# ─────────────────────────────────────
+# Logs
+# ─────────────────────────────────────
+*.log
+logs/
+*.out
+
+# ─────────────────────────────────────
+# Data Files — do NOT commit raw data
+# ─────────────────────────────────────
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.parquet
+*.avro
+data/
+raw_data/
+sample_data/
+
+# ─────────────────────────────────────
+# Temporary / Build Artifacts
+# ─────────────────────────────────────
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.cache
