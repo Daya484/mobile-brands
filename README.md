@@ -118,38 +118,41 @@ The goal of this pipeline is to:
 ## 🗂️ Medallion Architecture (Bronze → Silver → Gold)
 
 ```
-RAW (Excel)        →  BRONZE (Parquet)     →  SILVER (Parquet)      →  GOLD (BigQuery)
-────────────────────────────────────────────────────────────────────────────────────────
-Original .xlsx        No transformation         Type casting              KPI aggregations
-files from            Only adds metadata:       Null filtering            per brand/region
-distributors          - source_file             Deduplication             Market share %
-(INDIA, AMERICA,      - ingestion_time          Brand normalization        Revenue ranking
- CHINA, etc.)         - pipeline_layer          Revenue recompute         Daily trends
-                      - region, brand           Date parsing              7-day rolling avg
+RAW (Excel source)   →  RAW/CSV (landing)  →  BRONZE (Parquet)     →  SILVER (Parquet)      →  GOLD (BigQuery)
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Original .xlsx           Cloud Run splits       No transformation         Type casting              KPI aggregations
+files from               Excel by brand,        Only adds metadata:       Null filtering            per brand/region
+distributors             saves each sheet       - source_file             Deduplication             Market share %
+(INDIA, AMERICA,         as CSV to raw/         - ingestion_time          Brand normalization        Revenue ranking
+ CHINA, etc.)            No openpyxl            - pipeline_layer          Revenue recompute         Daily trends
+                         needed on cluster      - region, brand           Date parsing              7-day rolling avg
 ```
 
 ### GCS Bucket Layout
 
 ```
 gs://mb-pipeline-bucket/
-├── raw/                          ← Cloud Run writes here (split by brand)
+├── raw/                          ← Cloud Run writes CSV here (split by brand)
 │   ├── INDIA/
-│   │   ├── samsung/  sales.xlsx
-│   │   ├── apple/    sales.xlsx
-│   │   └── ...
+│   │   ├── samsung/  sales_May01.csv    ← Samsung sheet extracted → CSV
+│   │   ├── apple/    sales_May01.csv    ← Apple sheet extracted → CSV
+│   │   ├── oppo/     sales_May01.csv
+│   │   ├── vivo/     sales_May01.csv
+│   │   └── oneplus/  sales_May01.csv
 │   ├── AMERICA/
-│   └── ...
+│   │   └── samsung/  sales_May01.csv   ... etc.
+│   └── (AUSTRALIA, CHINA, SOUTH AFRICA, SOUTH KOREA)/
 │
-├── bronze/                       ← Bronze PySpark job writes here
+├── bronze/                       ← Bronze PySpark reads CSV → writes Parquet
 │   └── year=2024/month=5/day=1/
 │       ├── region=INDIA/brand=samsung/  *.parquet
 │       └── ...
 │
-├── silver/                       ← Silver PySpark job writes here
+├── silver/                       ← Silver PySpark reads Bronze → writes Parquet
 │   └── year=2024/month=5/day=1/
 │       └── brand=Samsung/region=INDIA/  *.parquet
 │
-├── gold/                         ← Gold PySpark job writes here
+├── gold/                         ← Gold PySpark reads Silver → writes Parquet
 │   ├── brand_kpi/
 │   ├── region_summary/
 │   └── daily_trend/
@@ -232,8 +235,9 @@ Daily granularity for time-series analytics.
   TASK 1 + 2 (parallel):
     ├── Cloud Run POST /extract
     │     → reads all 6 regions in parallel threads
-    │     → splits each Excel into 5 brand sheets
-    │     → writes to gs://mb-pipeline-bucket/raw/
+    │     → splits each Excel file into 5 brand sheets
+    │     → converts each sheet to CSV format
+    │     → writes to gs://mb-pipeline-bucket/raw/{REGION}/{brand}/*.csv
     │     → duration: ~2–5 min
     │
     └── Upload PySpark scripts to GCS (from Composer dags/ folder)
@@ -244,9 +248,10 @@ Daily granularity for time-series analytics.
     → duration: ~3–5 min
 
   TASK 4: Bronze Layer (bronze_job.py on Dataproc)
-    → reads raw/ Excel files (30 combinations: 6 regions × 5 brands)
-    → adds metadata: source_file, ingestion_time, region, brand
-    → writes Parquet to gs://mb-pipeline-bucket/bronze/YYYY/MM/DD/
+    → reads raw/ CSV files via spark.read.csv() — native Spark, no openpyxl needed
+    → 30 combinations processed: 6 regions × 5 brands
+    → adds metadata: source_file, ingestion_time, region, brand, pipeline_layer
+    → writes Parquet to gs://mb-pipeline-bucket/bronze/year=YYYY/month=MM/day=DD/
     → duration: ~5–10 min
 
   TASK 5: Silver Layer (silver_job.py on Dataproc)
@@ -329,8 +334,8 @@ Every GitHub push triggers Cloud Build, but **only rebuilds what changed**:
 ```
 mobile-brands/
 │
-├── extract.py                    # GCS extraction: reads Excel → splits by brand → raw/
-├── transformed.py                # Shared PySpark helpers (schemas, normalization utils)
+├── extract.py                    # Cloud Run extraction: Excel → CSV → raw/ (parallel, 6 regions)
+├── transformed.py                # Original standalone script (CSV output, not part of pipeline)
 │
 ├── cloud-run/
 │   ├── Dockerfile                # Multi-stage Docker build (Python 3.11-slim)
