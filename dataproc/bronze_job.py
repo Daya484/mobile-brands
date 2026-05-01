@@ -68,56 +68,46 @@ def create_spark_session(project_id: str, temp_bucket: str) -> SparkSession:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# READ EXCEL FILES FROM GCS
+# READ CSV FILES FROM GCS
 # ─────────────────────────────────────────────────────────────────────────────
-def read_excel_from_gcs(spark: SparkSession, gcs_path: str) -> DataFrame:
+def read_csv_from_gcs(spark: SparkSession, gcs_path: str) -> DataFrame:
     """
-    Reads all Excel files from a GCS path using pandas (via collect).
-    Falls back to CSV if Excel is unavailable on the cluster.
+    Reads all CSV files from a GCS path using native Spark CSV reader.
 
-    NOTE: For large datasets, convert to Parquet/CSV in the Cloud Run step.
-    This approach works for moderate file sizes (< 500 MB total per brand/region).
+    CSV files are written by the Cloud Run extraction service (extract.py).
+    Using spark.read.csv() is faster and more memory-efficient than reading
+    Excel files via pandas, and requires no openpyxl on the Dataproc cluster.
+
+    Path pattern: gs://bucket/raw/{REGION}/{brand}/*.csv
     """
-    import pandas as pd
-    from google.cloud import storage as gcs
+    log.info("Reading CSV files from: %s", gcs_path)
 
-    log.info("Reading Excel files from: %s", gcs_path)
+    try:
+        df = (
+            spark.read
+            .option("header", "true")          # first row = column names
+            .option("inferSchema", "true")     # auto-detect int/float/string
+            .option("multiLine", "true")       # handles quoted newlines
+            .option("escape", '"')             # standard CSV quoting
+            .option("encoding", "UTF-8")
+            .csv(f"{gcs_path}*.csv")
+        )
 
-    # Parse bucket and prefix from gs:// path
-    path_stripped = gcs_path.replace("gs://", "")
-    bucket_name   = path_stripped.split("/")[0]
-    prefix        = "/".join(path_stripped.split("/")[1:])
+        # Check if any files were found
+        if df.rdd.isEmpty():
+            log.warning("No CSV files found at %s", gcs_path)
+            return spark.createDataFrame([], StructType([StructField("_empty", StringType(), True)]))
 
-    client  = gcs.Client()
-    bucket  = client.bucket(bucket_name)
-    blobs   = list(bucket.list_blobs(prefix=prefix))
+        # Add source file path column
+        from pyspark.sql.functions import input_file_name
+        df = df.withColumn("_source_file", input_file_name())
 
-    excel_blobs = [b for b in blobs if b.name.lower().endswith((".xlsx", ".xls", ".xlsm"))]
-    log.info("Found %d Excel file(s) under %s", len(excel_blobs), gcs_path)
+        log.info("CSV files read successfully from: %s", gcs_path)
+        return df
 
-    if not excel_blobs:
-        log.warning("No Excel files found at %s — returning empty DataFrame", gcs_path)
+    except Exception as exc:
+        log.warning("No CSV files at %s (%s) — returning empty DataFrame", gcs_path, exc)
         return spark.createDataFrame([], StructType([StructField("_empty", StringType(), True)]))
-
-    frames = []
-    for blob in excel_blobs:
-        import io
-        data = io.BytesIO()
-        blob.download_to_file(data)
-        data.seek(0)
-        try:
-            df_pd = pd.read_excel(data, engine="openpyxl")
-            df_pd["_source_file"] = f"gs://{bucket_name}/{blob.name}"
-            frames.append(df_pd)
-        except Exception as exc:
-            log.error("Failed to read %s: %s", blob.name, exc)
-
-    if not frames:
-        return spark.createDataFrame([], StructType([StructField("_empty", StringType(), True)]))
-
-    import pandas as pd
-    combined_pd = pd.concat(frames, ignore_index=True)
-    return spark.createDataFrame(combined_pd)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +184,7 @@ def main():
             log.info("Processing: region=%s brand=%s", region, brand)
 
             try:
-                raw_df = read_excel_from_gcs(spark, input_path)
+                raw_df = read_csv_from_gcs(spark, input_path)
 
                 if "_empty" in raw_df.columns:
                     log.warning("Skipping empty result: region=%s brand=%s", region, brand)

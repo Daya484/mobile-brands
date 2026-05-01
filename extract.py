@@ -18,9 +18,12 @@ Source Bucket Layout:
 Destination (raw landing zone):
     mb-pipeline-bucket/
         raw/
-            AMERICA/samsung/file1.xlsx
-            AMERICA/apple/file1.xlsx
+            AMERICA/samsung/file1.csv
+            AMERICA/apple/file1.csv
             ...
+
+Note: Files are saved as CSV (not Excel) so that the Dataproc Bronze job
+can read them efficiently with spark.read.csv() — no openpyxl needed.
 """
 
 import io
@@ -145,13 +148,25 @@ def _read_brand_sheets(file_bytes: bytes, source_blob_name: str) -> dict[str, pd
     return sheets
 
 
-def _df_to_excel_bytes(df: pd.DataFrame, sheet_name: str) -> bytes:
-    """Converts a DataFrame to an in-memory Excel byte stream."""
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-    buffer.seek(0)
-    return buffer.read()
+def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """
+    Converts a DataFrame to UTF-8 CSV bytes.
+    CSV is preferred over Excel for the raw landing zone because:
+      - Spark reads CSV natively (no openpyxl on cluster needed)
+      - Faster read/write than Excel
+      - Smaller file size for tabular data
+    """
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False)
+    return buffer.getvalue().encode("utf-8")
+
+
+def _excel_to_csv_filename(filename: str) -> str:
+    """Replaces Excel extension with .csv — e.g. sales_May01.xlsx → sales_May01.csv"""
+    for ext in EXCEL_EXTENSIONS:
+        if filename.lower().endswith(ext):
+            return filename[: -len(ext)] + ".csv"
+    return filename + ".csv"
 
 
 def _upload_to_gcs(dest_bucket: storage.Bucket, dest_blob_name: str, data: bytes) -> None:
@@ -159,12 +174,13 @@ def _upload_to_gcs(dest_bucket: storage.Bucket, dest_blob_name: str, data: bytes
     blob = dest_bucket.blob(dest_blob_name)
     blob.metadata = {
         "ingestion_time": datetime.now(timezone.utc).isoformat(),
-        "pipeline": "mobile-brands",
-        "layer": "raw",
+        "pipeline":       "mobile-brands",
+        "layer":          "raw",
+        "format":         "csv",
     }
     blob.upload_from_file(
         io.BytesIO(data),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content_type="text/csv",
     )
     log.info("✔ Uploaded → gs://%s/%s", dest_bucket.name, dest_blob_name)
 
@@ -201,14 +217,15 @@ def _process_single_file(blob_name: str, region: str) -> None:
         log.warning("No brand sheets found in '%s'.", blob_name)
         return
 
-    # Upload each brand sheet to raw landing zone
-    # Path: raw/{REGION}/{brand}/{filename}
+    # Upload each brand sheet as CSV to raw landing zone
+    # Path: raw/{REGION}/{brand}/{filename}.csv
+    csv_file_name = _excel_to_csv_filename(file_name)   # sales_May01.xlsx → sales_May01.csv
     for brand_name, df in sheets.items():
         brand_folder   = BRAND_FOLDER_MAP[brand_name]
-        dest_blob_name = f"{RAW_PREFIX}/{region}/{brand_folder}/{file_name}"
+        dest_blob_name = f"{RAW_PREFIX}/{region}/{brand_folder}/{csv_file_name}"
         try:
-            excel_bytes = _df_to_excel_bytes(df, brand_name)
-            _upload_to_gcs(dest_bucket, dest_blob_name, excel_bytes)
+            csv_bytes = _df_to_csv_bytes(df)
+            _upload_to_gcs(dest_bucket, dest_blob_name, csv_bytes)
             _inc(uploaded=1)
         except Exception as exc:
             log.error("✖ Upload failed '%s': %s", dest_blob_name, exc)
