@@ -1,0 +1,17 @@
+# cloudbuild-deploy.yaml
+# Used by gcp_deployment.sh for initial Docker build & push.
+# Build context = repo root so extract.py is accessible to Dockerfile.
+# Dockerfile is in cloud-run/ and references cloud-run/ sub-paths.
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-t'
+      - '$_IMAGE_URL'
+      - '-f'
+      - 'cloud-run/Dockerfile'
+      - '.'
+images:
+  - '$_IMAGE_URL'
+options:
+  logging: CLOUD_LOGGING_ONLY
