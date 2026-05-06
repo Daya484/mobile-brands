@@ -6,7 +6,7 @@
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
-COPY requirements.txt .
+COPY cloud-run/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir --user -r requirements.txt
 
@@ -19,7 +19,8 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 
 # Copy app source
-COPY main.py .
+COPY cloud-run/main.py .
+COPY cloud-run/gcs_trigger.py .
 COPY extract.py .
 
 # Make sure scripts in .local are usable

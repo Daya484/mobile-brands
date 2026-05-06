@@ -164,8 +164,10 @@ deploy_env() {
 
   # ── PHASE 6: Build & Deploy Cloud Run ────────────────────────────────────────
   info "[${env}] Building Docker image via Cloud Build..."
-  gcloud builds submit cloud-run/ \
-    --tag="${image_url}" \
+  # Uses cloudbuild-deploy.yaml — submits from repo root so extract.py is in context
+  gcloud builds submit . \
+    --config=cloudbuild-deploy.yaml \
+    --substitutions="_IMAGE_URL=${image_url}" \
     --project="${project}"
   success "[${env}] Docker image built & pushed: ${image_url}"
 
