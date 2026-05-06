@@ -492,3 +492,27 @@ Built as a production-grade GCP data engineering portfolio project demonstrating
 - Serverless microservices with Cloud Run
 - Managed orchestration with Cloud Composer (Airflow)
 - BigQuery as the analytics serving layer
+
+---
+
+## 🚀 Quick Start — Deploy to GCP (Cloud Shell)
+
+```bash
+# 1. Clone & enter the repo
+git clone https://github.com/Daya484/mobile-brands.git
+cd mobile-brands
+
+# 2. Make executable
+chmod +x gcp_deployment.sh
+
+# 3. Deploy Development environment
+ENV=dv bash gcp_deployment.sh
+
+# 4. Deploy Production environment
+ENV=pd bash gcp_deployment.sh
+
+# 5. Deploy BOTH environments
+bash gcp_deployment.sh
+```
+
+> See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full step-by-step guide.

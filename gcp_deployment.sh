@@ -87,7 +87,13 @@ deploy_env() {
     --display-name="Mobile Brands Pipeline SA [${env}]" \
     --project="${project}" 2>/dev/null || echo "  (already exists — skipping)"
 
-  info "[${env}] Granting IAM roles..."
+  # Get project number (needed for Cloud Build SA emails)
+  local project_number
+  project_number=$(gcloud projects describe "${project}" --format="value(projectNumber)")
+  local cb_compute_sa="${project_number}-compute@developer.gserviceaccount.com"
+  local cb_legacy_sa="${project_number}@cloudbuild.gserviceaccount.com"
+
+  info "[${env}] Granting IAM roles to pipeline SA..."
   for ROLE in \
     "roles/storage.admin" \
     "roles/bigquery.admin" \
@@ -101,9 +107,33 @@ deploy_env() {
     "roles/monitoring.metricWriter"; do
       gcloud projects add-iam-policy-binding "${project}" \
         --member="serviceAccount:${sa_email}" \
-        --role="${ROLE}" --quiet 2>/dev/null || true
+        --role="${ROLE}" --quiet
       echo "    ✅ ${ROLE}"
   done
+
+  info "[${env}] Granting Cloud Build SA (Compute Engine default) storage & build access..."
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${cb_compute_sa}" \
+    --role="roles/storage.admin" --quiet
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${cb_compute_sa}" \
+    --role="roles/artifactregistry.writer" --quiet
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${cb_compute_sa}" \
+    --role="roles/cloudbuild.builds.builder" --quiet
+  echo "    ✅ Compute Engine default SA granted"
+
+  info "[${env}] Granting Cloud Build legacy SA permissions..."
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${cb_legacy_sa}" \
+    --role="roles/storage.admin" --quiet 2>/dev/null || echo "  (legacy CB SA may not exist yet)"
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${cb_legacy_sa}" \
+    --role="roles/artifactregistry.writer" --quiet 2>/dev/null || true
+  echo "    ✅ Legacy Cloud Build SA granted"
+
+  info "[${env}] Waiting 15s for IAM permissions to propagate..."
+  sleep 15
   success "[${env}] Service account & IAM ready"
 
   # ── PHASE 4: GCS Buckets ─────────────────────────────────────────────────────
@@ -133,27 +163,7 @@ deploy_env() {
   success "[${env}] Artifact Registry ready"
 
   # ── PHASE 6: Build & Deploy Cloud Run ────────────────────────────────────────
-  info "[${env}] Granting Cloud Build service accounts storage access..."
-  local project_number
-  project_number=$(gcloud projects describe "${project}" --format="value(projectNumber)")
-
-  # Compute Engine default SA (used by Cloud Build in newer projects)
-  gcloud projects add-iam-policy-binding "${project}" \
-    --member="serviceAccount:${project_number}-compute@developer.gserviceaccount.com" \
-    --role="roles/storage.admin" --quiet 2>/dev/null || true
-
-  # Legacy Cloud Build SA
-  gcloud projects add-iam-policy-binding "${project}" \
-    --member="serviceAccount:${project_number}@cloudbuild.gserviceaccount.com" \
-    --role="roles/storage.admin" --quiet 2>/dev/null || true
-
-  gcloud projects add-iam-policy-binding "${project}" \
-    --member="serviceAccount:${project_number}@cloudbuild.gserviceaccount.com" \
-    --role="roles/artifactregistry.writer" --quiet 2>/dev/null || true
-
-  success "[${env}] Cloud Build permissions ready"
-
-  info "[${env}] Building Docker image via Cloud Build (no local Docker needed)..."
+  info "[${env}] Building Docker image via Cloud Build..."
   gcloud builds submit cloud-run/ \
     --tag="${image_url}" \
     --project="${project}"
