@@ -133,6 +133,26 @@ deploy_env() {
   success "[${env}] Artifact Registry ready"
 
   # ── PHASE 6: Build & Deploy Cloud Run ────────────────────────────────────────
+  info "[${env}] Granting Cloud Build service accounts storage access..."
+  local project_number
+  project_number=$(gcloud projects describe "${project}" --format="value(projectNumber)")
+
+  # Compute Engine default SA (used by Cloud Build in newer projects)
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${project_number}-compute@developer.gserviceaccount.com" \
+    --role="roles/storage.admin" --quiet 2>/dev/null || true
+
+  # Legacy Cloud Build SA
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${project_number}@cloudbuild.gserviceaccount.com" \
+    --role="roles/storage.admin" --quiet 2>/dev/null || true
+
+  gcloud projects add-iam-policy-binding "${project}" \
+    --member="serviceAccount:${project_number}@cloudbuild.gserviceaccount.com" \
+    --role="roles/artifactregistry.writer" --quiet 2>/dev/null || true
+
+  success "[${env}] Cloud Build permissions ready"
+
   info "[${env}] Building Docker image via Cloud Build (no local Docker needed)..."
   gcloud builds submit cloud-run/ \
     --tag="${image_url}" \
