@@ -260,14 +260,15 @@ def run_extraction(
     Main extraction function.
     Returns a summary dict with counts for the Airflow/Cloud Run caller.
     """
+    # global declarations MUST come before any use of the variable
     global _total_files, _total_uploaded, _total_errors
+    global SOURCE_BUCKET_NAME, DEST_BUCKET_NAME
     _total_files = _total_uploaded = _total_errors = 0
 
     src  = source_bucket or SOURCE_BUCKET_NAME
     dest = dest_bucket   or DEST_BUCKET_NAME
 
     # Allow overriding via arguments
-    global SOURCE_BUCKET_NAME, DEST_BUCKET_NAME
     SOURCE_BUCKET_NAME = src
     DEST_BUCKET_NAME   = dest
 
