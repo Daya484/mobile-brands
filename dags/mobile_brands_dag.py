@@ -37,7 +37,7 @@ from airflow.providers.google.cloud.operators.dataproc import (
     DataprocDeleteClusterOperator,
     DataprocSubmitJobOperator,
 )
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 
@@ -228,7 +228,7 @@ with DAG(
     # Cloud Run reads ALL Excel files currently in the source GCS bucket,
     # splits brand sheets, and writes them to the raw/ landing zone.
     # This processes everything that was uploaded since the last run.
-    trigger_extraction = SimpleHttpOperator(
+    trigger_extraction = HttpOperator(
         task_id="trigger_cloud_run_extraction",
         http_conn_id=f"mb_{_ENV_NAME}_cloud_run_conn",
         endpoint="/extract",
