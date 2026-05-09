@@ -290,7 +290,14 @@ def run_extraction(
 
     if not folder_name_map:
         log.warning("No Excel files found in gs://%s — exiting.", SOURCE_BUCKET_NAME)
-        return {"status": "empty", "files": 0, "uploaded": 0, "errors": 0}
+        return {
+            "status": "empty", 
+            "folders": 0,
+            "files": 0, 
+            "uploaded": 0, 
+            "errors": 0,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
 
     log.info("Found %d folder(s): %s", len(folder_name_map), list(folder_name_map.keys()))
 
