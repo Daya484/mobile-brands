@@ -183,7 +183,7 @@ deploy_env() {
     --timeout=900 \
     --max-instances=5 \
     --concurrency=80 \
-    --startup-cpu-boost \
+    --cpu-boost \
     --set-env-vars="ENV=${env},PROJECT_ID=${project},SOURCE_BUCKET=${source_bucket},DEST_BUCKET=${pipeline_bucket},LOG_LEVEL=INFO" \
     --project="${project}"
 
