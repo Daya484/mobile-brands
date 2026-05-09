@@ -36,7 +36,7 @@ GITHUB_OWNER="Daya484"
 GITHUB_REPO="mobile-brands"
 
 # ── ENV DEFINITIONS ────────────────────────────────────────────────────────────
-declare -A PROJECT_IDS=( ["dv"]="dv-env"              ["pd"]="prod-env" )
+declare -A PROJECT_IDS=( ["dv"]="dv-env"              ["pd"]="pd-env-495516" )
 declare -A PIPELINE_BUCKETS=( ["dv"]="dv-mb-pipeline-bucket" ["pd"]="pd-mb-pipeline-bucket" )
 declare -A SOURCE_BUCKETS=(   ["dv"]="dv-mobile-brands"       ["pd"]="mobile-brands" )
 declare -A SERVICES=(         ["dv"]="dv-mb-extractor"         ["pd"]="pd-mb-extractor" )
