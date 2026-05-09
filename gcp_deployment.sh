@@ -230,10 +230,9 @@ deploy_env() {
   info "[${env}] Creating Cloud Composer environment: ${composer} (this takes 20–30 min)..."
   gcloud composer environments create "${composer}" \
     --location="${REGION}" \
-    --image-version="composer-2.6.6-airflow-2.7.3" \
     --service-account="${sa_email}" \
     --environment-size=small \
-    --project="${project}" 2>/dev/null || echo "  (already exists)"
+    --project="${project}" || echo "  (already exists — skipping)"
 
   local composer_bucket
   composer_bucket=$(gcloud composer environments describe "${composer}" \
