@@ -35,7 +35,7 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.google.cloud.operators.dataproc import (
     DataprocCreateClusterOperator,
     DataprocDeleteClusterOperator,
-    DataprocSubmitPySparkJobOperator,
+    DataprocSubmitJobOperator,
 )
 from airflow.providers.google.cloud.operators.http import SimpleHttpOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -63,7 +63,7 @@ _ENV_CONFIGS = {
         "num_workers":       2,
     },
     "pd": {
-        "project_id":        "prod-env",
+        "project_id":        "pd-env-495516",
         "bucket":            "pd-mb-pipeline-bucket",
         "source_bucket":     "mobile-brands",
         "bq_dataset":        "mobile_brands",
@@ -271,48 +271,63 @@ with DAG(
     )
 
     # ── TASK 4: BRONZE Layer ─────────────────────────────────────────────────
-    bronze_job = DataprocSubmitPySparkJobOperator(
+    bronze_job = DataprocSubmitJobOperator(
         task_id="bronze_layer",
         project_id=PROJECT_ID,
         region=GCP_REGION,
-        cluster_name=CLUSTER_NAME,
-        main=f"{SCRIPTS_GCS}/bronze_job.py",
-        arguments=[
-            f"--project_id={PROJECT_ID}",
-            f"--bucket={GCS_BUCKET}",
-            "--execution_date={{ ds }}",
-        ],
-        dataproc_jars=[SPARK_BQ_JAR],
+        job={
+            "reference": {"project_id": PROJECT_ID},
+            "placement": {"cluster_name": CLUSTER_NAME},
+            "pyspark_job": {
+                "main_python_file_uri": f"{SCRIPTS_GCS}/bronze_job.py",
+                "args": [
+                    f"--project_id={PROJECT_ID}",
+                    f"--bucket={GCS_BUCKET}",
+                    "--execution_date={{ ds }}",
+                ],
+                "jar_file_uris": [SPARK_BQ_JAR],
+            },
+        },
     )
 
     # ── TASK 5: SILVER Layer ─────────────────────────────────────────────────
-    silver_job = DataprocSubmitPySparkJobOperator(
+    silver_job = DataprocSubmitJobOperator(
         task_id="silver_layer",
         project_id=PROJECT_ID,
         region=GCP_REGION,
-        cluster_name=CLUSTER_NAME,
-        main=f"{SCRIPTS_GCS}/silver_job.py",
-        arguments=[
-            f"--project_id={PROJECT_ID}",
-            f"--bucket={GCS_BUCKET}",
-            f"--bq_dataset={BQ_DATASET}",
-        ],
-        dataproc_jars=[SPARK_BQ_JAR],
+        job={
+            "reference": {"project_id": PROJECT_ID},
+            "placement": {"cluster_name": CLUSTER_NAME},
+            "pyspark_job": {
+                "main_python_file_uri": f"{SCRIPTS_GCS}/silver_job.py",
+                "args": [
+                    f"--project_id={PROJECT_ID}",
+                    f"--bucket={GCS_BUCKET}",
+                    f"--bq_dataset={BQ_DATASET}",
+                ],
+                "jar_file_uris": [SPARK_BQ_JAR],
+            },
+        },
     )
 
     # ── TASK 6: GOLD Layer ───────────────────────────────────────────────────
-    gold_job = DataprocSubmitPySparkJobOperator(
+    gold_job = DataprocSubmitJobOperator(
         task_id="gold_layer",
         project_id=PROJECT_ID,
         region=GCP_REGION,
-        cluster_name=CLUSTER_NAME,
-        main=f"{SCRIPTS_GCS}/gold_job.py",
-        arguments=[
-            f"--project_id={PROJECT_ID}",
-            f"--bucket={GCS_BUCKET}",
-            f"--bq_dataset={BQ_DATASET}",
-        ],
-        dataproc_jars=[SPARK_BQ_JAR],
+        job={
+            "reference": {"project_id": PROJECT_ID},
+            "placement": {"cluster_name": CLUSTER_NAME},
+            "pyspark_job": {
+                "main_python_file_uri": f"{SCRIPTS_GCS}/gold_job.py",
+                "args": [
+                    f"--project_id={PROJECT_ID}",
+                    f"--bucket={GCS_BUCKET}",
+                    f"--bq_dataset={BQ_DATASET}",
+                ],
+                "jar_file_uris": [SPARK_BQ_JAR],
+            },
+        },
     )
 
     # ── TASK 7: Delete Dataproc Cluster (always runs) ────────────────────────
