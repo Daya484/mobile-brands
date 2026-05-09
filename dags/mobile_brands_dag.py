@@ -37,7 +37,6 @@ from airflow.providers.google.cloud.operators.dataproc import (
     DataprocDeleteClusterOperator,
     DataprocSubmitJobOperator,
 )
-from airflow.providers.http.operators.http import HttpOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 
@@ -162,6 +161,43 @@ default_args = {
 # PYTHON CALLABLES
 # ─────────────────────────────────────────────────────────────────────────────
 
+def trigger_cloud_run_extraction(**context):
+    """
+    Calls the Cloud Run extraction endpoint with a Google OIDC Identity Token.
+    """
+    import json
+    import urllib.request
+    import google.auth.transport.requests
+    import google.oauth2.id_token
+
+    url = f"{CLOUD_RUN_URL}/extract"
+    payload = json.dumps({
+        "source_bucket": SOURCE_BUCKET,
+        "dest_bucket": GCS_BUCKET
+    }).encode("utf-8")
+    
+    print(f"Triggering Cloud Run at: {url}")
+    
+    # Generate OIDC token using Composer's Service Account
+    auth_req = google.auth.transport.requests.Request()
+    token = google.oauth2.id_token.fetch_id_token(auth_req, CLOUD_RUN_URL)
+    
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    
+    try:
+        with urllib.request.urlopen(req, timeout=900) as response:
+            res_body = response.read().decode("utf-8")
+            print(f"Response: {res_body}")
+            res_json = json.loads(res_body)
+            if res_json.get("status") not in ("success", "empty"):
+                raise ValueError(f"Extraction failed: {res_body}")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        print(f"HTTPError {e.code}: {error_body}")
+        raise ValueError(f"Cloud Run HTTP Error {e.code}: {error_body}")
+
 def check_data_quality(**context):
     """
     Validates BigQuery table row counts after pipeline run.
@@ -228,19 +264,9 @@ with DAG(
     # Cloud Run reads ALL Excel files currently in the source GCS bucket,
     # splits brand sheets, and writes them to the raw/ landing zone.
     # This processes everything that was uploaded since the last run.
-    trigger_extraction = HttpOperator(
+    trigger_extraction = PythonOperator(
         task_id="trigger_cloud_run_extraction",
-        http_conn_id=f"mb_{_ENV_NAME}_cloud_run_conn",
-        endpoint="/extract",
-        method="POST",
-        headers={"Content-Type": "application/json"},
-        data=(
-            f'{{"source_bucket": "{SOURCE_BUCKET}", '
-            f'"dest_bucket": "{GCS_BUCKET}"}}'
-        ),
-        response_check=lambda response: response.json().get("status") in ("success", "empty"),
-        log_response=True,
-        extra_options={"timeout": 900},
+        python_callable=trigger_cloud_run_extraction,
     )
 
     # ── TASK 2: Upload PySpark scripts to GCS ────────────────────────────────
